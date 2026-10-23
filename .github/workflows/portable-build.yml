@@ -1,0 +1,49 @@
+name: Build portable Windows fork
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  portable-x64:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.build-cache/vcpkg
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: |
+            packages
+            .build-cache
+          key: windows-portable-v1-${{ hashFiles('**/packages.config', '**/vcpkg.json', 'Common/vcpkg-configuration.json') }}
+      - name: Restore native dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" integrate install
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Invoke-WebRequest https://dist.nuget.org/win-x86-commandline/v7.0.1/nuget.exe -OutFile "$env:RUNNER_TEMP/nuget.exe"
+          & "$env:RUNNER_TEMP/nuget.exe" restore TranslucentTB.slnx -NonInteractive -Source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build complete application
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "TTB_VS_PATH=%%i"
+          call "%TTB_VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          msbuild AppPackage\AppPackage.wapproj /m /p:Configuration=Release /p:Platform=x64 /p:BuildType=Dev /p:AppxPackageSigningEnabled=false /p:AppxBundle=Never /p:SkipSigning=True /v:minimal /bl:portable-build.binlog
+      - name: Package portable application
+        shell: pwsh
+        run: |
+          & .azp/scripts/create-portable.ps1 -Platform x64 -Configuration Release -WorkDir "$env:RUNNER_TEMP" -OutputDir portable
+          if (!(Test-Path portable/TranslucentTB.exe)) { throw 'Portable application missing' }
+          Get-ChildItem portable -Recurse -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize | Out-String -Width 400 | Set-Content portable/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TranslucentTB-portable-x64
+          path: portable
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: portable-build-log
+          path: portable-build.binlog
