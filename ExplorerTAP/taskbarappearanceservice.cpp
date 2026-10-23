@@ -41,6 +41,11 @@ HRESULT TaskbarAppearanceService::SetTaskbarAppearance(HWND taskbar, TaskbarBrus
 		if (info->background.control && info->background.originalFill)
 		{
 			const winrt::Windows::UI::Color tint = Util::Color::FromABGR(color);
+			if (brush == SolidColor && info->transition.SolidColor(info->background.control, info->background.originalFill, tint))
+			{
+				return S_OK;
+			}
+			info->transition.Reset();
 			wux::Media::Brush newBrush = nullptr;
 			if (brush == Acrylic)
 			{
@@ -81,6 +86,7 @@ HRESULT TaskbarAppearanceService::SetTaskbarBlur(HWND taskbar, UINT color, FLOAT
 	{
 		if (info->background.control && info->background.originalFill)
 		{
+			info->transition.Reset();
 			const winrt::Windows::UI::Color tint = Util::Color::FromABGR(color);
 			const wfn::float4 tintHdr = {
 				tint.R / 255.0f,
@@ -103,11 +109,12 @@ catch (...)
 
 HRESULT TaskbarAppearanceService::ReturnTaskbarToDefaultAppearance(HWND taskbar) try
 {
-	for (const auto& [handle, info] : m_Taskbars)
+	for (auto& [handle, info] : m_Taskbars)
 	{
 		if (GetAncestor(info.window, GA_PARENT) == taskbar)
 		{
 			RestoreDefaultControlFill(info.background);
+			info.transition.Hide();
 			break;
 		}
 	}
@@ -121,21 +128,20 @@ catch (...)
 
 HRESULT TaskbarAppearanceService::SetTaskbarBorderVisibility(HWND taskbar, BOOL visible) try
 {
-	for (const auto& [handle, info] : m_Taskbars)
+	for (auto& [handle, info] : m_Taskbars)
 	{
 		if (GetAncestor(info.window, GA_PARENT) == taskbar)
 		{
-			if (visible)
+			if (info.border.control)
 			{
 				RestoreDefaultControlFill(info.border);
-			}
-			else
-			{
-				if (info.border.control && info.border.originalFill)
+				auto visual = wuxh::ElementCompositionPreview::GetElementVisual(info.border.control);
+				if (!info.borderOpacity) info.borderOpacity = visual.Opacity();
+				const bool show = visible != FALSE;
+				if (info.borderVisible != show)
 				{
-					wux::Media::SolidColorBrush brush;
-					brush.Opacity(0);
-					info.border.control.Fill(brush);
+					TaskbarTransition::Opacity(visual, show ? *info.borderOpacity : 0);
+					info.borderVisible = show;
 				}
 			}
 
@@ -152,8 +158,16 @@ catch (...)
 
 HRESULT TaskbarAppearanceService::RestoreAllTaskbarsToDefault() try
 {
-	for (const auto& [handle, info] : m_Taskbars)
+	for (auto& [handle, info] : m_Taskbars)
 	{
+		info.transition.Reset();
+		if (info.border.control && info.borderOpacity)
+		{
+			auto visual = wuxh::ElementCompositionPreview::GetElementVisual(info.border.control);
+			visual.StopAnimation(L"Opacity");
+			visual.Opacity(*info.borderOpacity);
+		}
+		info.borderVisible = true;
 		RestoreDefaultControlFill(info.background);
 		RestoreDefaultControlFill(info.border);
 	}
@@ -231,6 +245,7 @@ catch (...)
 
 void TaskbarAppearanceService::RegisterTaskbar(InstanceHandle frameHandle, HWND window)
 {
+	UnregisterTaskbar(frameHandle);
 	m_Taskbars.insert_or_assign(frameHandle, TaskbarInfo { { }, { }, window });
 }
 
@@ -238,13 +253,16 @@ void TaskbarAppearanceService::RegisterTaskbarBackground(InstanceHandle frameHan
 {
 	if (const auto it = m_Taskbars.find(frameHandle); it != m_Taskbars.end())
 	{
+		it->second.transition.Reset();
+		if (it->second.background.control && it->second.background.fillChangedToken)
+			it->second.background.control.UnregisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), it->second.background.fillChangedToken);
 		it->second.background.control = element;
 
 		// sometimes we may see objects come with their fill set to null, wait until the system initialized it before
 		// we start messing with it
 		// in the future if the taskbar doesn't change the original brush, but tries to change the entire brush
 		// this could be useful to suppress it and update the saved brush
-		element.RegisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), { get_weak(), &TaskbarAppearanceService::OnTaskbarBackgroundUpdated });
+		it->second.background.fillChangedToken = element.RegisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), { get_weak(), &TaskbarAppearanceService::OnTaskbarBackgroundUpdated });
 		it->second.background.originalFill = element.Fill();
 	}
 }
@@ -253,9 +271,13 @@ void TaskbarAppearanceService::RegisterTaskbarBorder(InstanceHandle frameHandle,
 {
 	if (const auto it = m_Taskbars.find(frameHandle); it != m_Taskbars.end())
 	{
+		if (it->second.border.control && it->second.border.fillChangedToken)
+			it->second.border.control.UnregisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), it->second.border.fillChangedToken);
+		it->second.borderOpacity.reset();
+		it->second.borderVisible = true;
 		it->second.border.control = element;
 
-		element.RegisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), { get_weak(), &TaskbarAppearanceService::OnTaskbarBorderUpdated });
+		it->second.border.fillChangedToken = element.RegisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), { get_weak(), &TaskbarAppearanceService::OnTaskbarBorderUpdated });
 		it->second.border.originalFill = element.Fill();
 	}
 }
@@ -264,6 +286,13 @@ void TaskbarAppearanceService::UnregisterTaskbar(InstanceHandle frameHandle)
 {
 	if (auto it = m_Taskbars.find(frameHandle); it != m_Taskbars.end())
 	{
+		it->second.transition.Reset();
+		if (it->second.border.control && it->second.borderOpacity)
+		{
+			auto visual = wuxh::ElementCompositionPreview::GetElementVisual(it->second.border.control);
+			visual.StopAnimation(L"Opacity");
+			visual.Opacity(*it->second.borderOpacity);
+		}
 		const auto fillProperty = wux::Shapes::Shape::FillProperty();
 		if (it->second.background.fillChangedToken != 0)
 		{
@@ -355,17 +384,17 @@ void TaskbarAppearanceService::OnPackageUpdating(const wam::PackageCatalog&, con
 	}
 }
 
-std::optional<TaskbarAppearanceService::TaskbarInfo> TaskbarAppearanceService::GetTaskbarInfo(HWND taskbar)
+TaskbarAppearanceService::TaskbarInfo *TaskbarAppearanceService::GetTaskbarInfo(HWND taskbar)
 {
-	for (const auto& [handle, info] : m_Taskbars)
+	for (auto& [handle, info] : m_Taskbars)
 	{
 		if (GetAncestor(info.window, GA_PARENT) == taskbar)
 		{
-			return info;
+			return &info;
 		}
 	}
 
-	return std::nullopt;
+	return nullptr;
 }
 
 void TaskbarAppearanceService::OnTaskbarBackgroundUpdated(const wux::DependencyObject &sender, const wux::DependencyProperty&)

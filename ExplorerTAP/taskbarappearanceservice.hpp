@@ -9,6 +9,7 @@
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 #include <winrt/Windows.UI.Xaml.Hosting.h>
+#include "taskbartransition.hpp"
 #include "redefgetcurrenttime.h"
 #include <wil/resource.h>
 
@@ -62,12 +63,15 @@ private:
 	{
 		ControlInfo<wux::Shapes::Shape> background, border;
 		HWND window;
+		TaskbarTransition transition;
+		std::optional<float> borderOpacity;
+		bool borderVisible = true;
 	};
 
 	winrt::fire_and_forget OnProcessDied();
 	void OnPackageUninstalling(const wam::PackageCatalog &catalog, const wam::PackageUninstallingEventArgs &args);
 	void OnPackageUpdating(const wam::PackageCatalog &catalog, const wam::PackageUpdatingEventArgs &args);
-	std::optional<TaskbarInfo> GetTaskbarInfo(HWND taskbar);
+	TaskbarInfo *GetTaskbarInfo(HWND taskbar);
 
 	void OnTaskbarBackgroundUpdated(const wux::DependencyObject &sender, const wux::DependencyProperty &dp);
 	void OnTaskbarBorderUpdated(const wux::DependencyObject &sender, const wux::DependencyProperty &dp);

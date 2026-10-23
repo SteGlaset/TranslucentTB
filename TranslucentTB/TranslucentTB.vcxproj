@@ -112,6 +112,7 @@
     <ClInclude Include="tray\basecontextmenu.hpp" />
     <ClInclude Include="tray\traycontextmenu.hpp" />
     <ClInclude Include="taskbar\taskbarattributeworker.hpp" />
+    <ClInclude Include="..\Common\neovidetheme.hpp" />
     <ClInclude Include="uwp\basexamlpagehost.hpp" />
     <ClInclude Include="uwp\dynamicdependency.hpp" />
     <ClInclude Include="uwp\xamldragregion.hpp" />

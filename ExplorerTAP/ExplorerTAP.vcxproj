@@ -83,6 +83,7 @@
     <ClInclude Include="Generated Files\$(Platform)\TaskbarBrush.h" />
     <ClInclude Include="tapsite.hpp" />
     <ClInclude Include="taskbarappearanceservice.hpp" />
+    <ClInclude Include="taskbartransition.hpp" />
     <ClInclude Include="visualtreewatcher.hpp" />
     <ClInclude Include="XamlBlurBrush.h" />
   </ItemGroup>

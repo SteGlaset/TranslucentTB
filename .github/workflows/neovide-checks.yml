@@ -1,0 +1,18 @@
+name: Neovide integration checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  policy-and-transition-header:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run focused checks
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "TTB_VS_PATH=%%i"
+          call "%TTB_VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          pwsh -NoProfile -File scripts/check-neovide.ps1

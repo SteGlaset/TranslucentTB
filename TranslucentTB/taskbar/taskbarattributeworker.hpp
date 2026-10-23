@@ -17,6 +17,7 @@
 #include <winrt/WindowsUdk.UI.Shell.h> // this is less evil
 
 #include "config/taskbarappearance.hpp"
+#include "neovidetheme.hpp"
 #include "../dynamicloader.hpp"
 #include "../ExplorerHooks/api.hpp"
 #include "../ExplorerTAP/api.hpp"
@@ -93,6 +94,23 @@ private:
 	std::unordered_map<HMONITOR, MonitorInfo> m_Taskbars;
 	std::unordered_set<Window> m_NormalTaskbars;
 	ConfigManager &m_ConfigManager;
+
+	// Optional live Neovide themes. Kernel waits and existing WinEvent hooks only.
+	struct NeovideClient
+	{
+		DWORD ProcessId, Token;
+		UINT32 Rgb;
+		HWND Receiver;
+		wil::unique_process_handle Process;
+		HANDLE Wait = nullptr;
+		~NeovideClient() { if (Wait) UnregisterWaitEx(Wait, INVALID_HANDLE_VALUE); }
+	};
+	std::unordered_map<DWORD, std::unique_ptr<NeovideClient>> m_NeovideClients;
+	NeovideTheme::FocusContext m_NeovideFocus;
+	Window m_NeovideMinimizing;
+	DWORD m_NeovideToken = 0;
+	static void CALLBACK NeovideProcessExited(void *context, BOOLEAN);
+	LRESULT OnNeovideTheme(const COPYDATASTRUCT *copy);
 
 	// Hooks
 	member_thunk::page m_ThunkPage;

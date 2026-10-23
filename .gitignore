@@ -351,3 +351,4 @@ MigrationBackup/
 .vscode/
 enc_temp_folder/
 vcpkg_installed/
+.fork-checks/

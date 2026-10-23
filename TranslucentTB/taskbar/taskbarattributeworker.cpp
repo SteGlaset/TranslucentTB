@@ -1,5 +1,6 @@
 #include "taskbarattributeworker.hpp"
 #include <functional>
+#include <cstring>
 #include <member_thunk/member_thunk.hpp>
 #include <set>
 #include <tlhelp32.h>
@@ -15,6 +16,28 @@
 #include "win32.hpp"
 #include "winrt/Windows.Foundation.h"
 #include "winrt/Windows.Foundation.Metadata.h"
+
+namespace
+{
+	HWND ApplicationRoot(HWND window)
+	{
+		const HWND root = GetAncestor(window, GA_ROOTOWNER);
+		return root ? root : window;
+	}
+	bool IsTaskbarWindow(HWND window)
+	{
+		wchar_t name[128]{};
+		GetClassNameW(window, name, static_cast<int>(std::size(name)));
+		return wcscmp(name, L"Shell_TrayWnd") == 0 || wcscmp(name, L"Shell_SecondaryTrayWnd") == 0;
+	}
+	bool IsFullscreen(Window window)
+	{
+		if (window.maximised()) return true;
+		RECT rect{};
+		MONITORINFO monitor{ sizeof(monitor) };
+		return GetWindowRect(window, &rect) && GetMonitorInfoW(window.monitor(), &monitor) && EqualRect(&rect, &monitor.rcMonitor);
+	}
+}
 
 class TaskbarAttributeWorker::AttributeRefresher {
 private:
@@ -63,6 +86,11 @@ void TaskbarAttributeWorker::WindowInsertRemove(DWORD event, HWND hwnd, LONG idO
 {
 	if (const Window window(hwnd); idObject == OBJID_WINDOW && idChild == CHILDID_SELF)
 	{
+		if constexpr (remove == EVENT_SYSTEM_MINIMIZESTART)
+		{
+			if (event == remove) m_NeovideMinimizing = window;
+			else if (m_NeovideMinimizing == window) m_NeovideMinimizing = Window::NullWindow;
+		}
 		if (event == insert && window.valid())
 		{
 			InsertWindow(window, true);
@@ -75,6 +103,8 @@ void TaskbarAttributeWorker::WindowInsertRemove(DWORD event, HWND hwnd, LONG idO
 				RemoveWindow(window, it, refresher);
 			}
 		}
+		if constexpr (remove == EVENT_SYSTEM_MINIMIZESTART)
+			if (!m_NeovideClients.empty()) RefreshAllAttributes();
 	}
 }
 
@@ -91,6 +121,8 @@ void TaskbarAttributeWorker::OnWindowStateChange(DWORD, HWND hwnd, LONG idObject
 	if (const Window window(hwnd); idObject == OBJID_WINDOW && idChild == CHILDID_SELF && window.valid())
 	{
 		InsertWindow(window, true);
+		if (!m_NeovideClients.empty() && (m_NeovideClients.contains(window.process_id()) || m_NeovideFocus.LastApplication == reinterpret_cast<std::uintptr_t>(hwnd)))
+			RefreshAllAttributes();
 	}
 }
 
@@ -98,6 +130,7 @@ void TaskbarAttributeWorker::OnWindowCreateDestroy(DWORD event, HWND hwnd, LONG 
 {
 	if (const Window window(hwnd); idObject == OBJID_WINDOW && idChild == CHILDID_SELF)
 	{
+		if (event == EVENT_OBJECT_DESTROY && m_NeovideMinimizing == window) m_NeovideMinimizing = Window::NullWindow;
 		if (event == EVENT_OBJECT_CREATE && window.valid())
 		{
 			if (const auto className = window.classname(); className && (*className == TASKBAR || *className == SECONDARY_TASKBAR))
@@ -138,12 +171,19 @@ void TaskbarAttributeWorker::OnForegroundWindowChange(DWORD, HWND hwnd, LONG idO
 	if (idObject == OBJID_WINDOW && idChild == CHILDID_SELF)
 	{
 		const Window oldForegroundWindow = std::exchange(m_ForegroundWindow, Window(hwnd).valid() ? hwnd : Window::NullWindow);
+		const HWND root = ApplicationRoot(hwnd);
+		m_NeovideFocus.Observe(reinterpret_cast<std::uintptr_t>(root), IsTaskbarWindow(root));
 
 		if (Error::ShouldLog<spdlog::level::debug>())
 		{
 			MessagePrint(spdlog::level::debug, std::format(L"Changed foreground window to {}", DumpWindow(m_ForegroundWindow)));
 		}
 
+		if (!m_NeovideClients.empty())
+		{
+			RefreshAllAttributes();
+			return;
+		}
 		AttributeRefresher refresher(*this);
 		HMONITOR oldMonitor = nullptr;
 		if (oldForegroundWindow)
@@ -318,8 +358,77 @@ LRESULT TaskbarAttributeWorker::OnRequestAttributeRefresh(LPARAM lParam)
 	return 0;
 }
 
+void CALLBACK TaskbarAttributeWorker::NeovideProcessExited(void *context, BOOLEAN)
+{
+	const auto client = static_cast<NeovideClient *>(context);
+	PostMessageW(client->Receiver, NeovideTheme::ProcessExitedMessage, client->ProcessId, client->Token);
+}
+
+LRESULT TaskbarAttributeWorker::OnNeovideTheme(const COPYDATASTRUCT *copy)
+{
+	if (!copy || copy->dwData != NeovideTheme::CopyDataId || copy->cbData != sizeof(NeovideTheme::Packet) || !copy->lpData) return FALSE;
+	NeovideTheme::Packet packet{};
+	std::memcpy(&packet, copy->lpData, sizeof(packet));
+	if (!NeovideTheme::Valid(packet)) return FALSE;
+	if (!packet.Enabled)
+	{
+		if (m_NeovideMinimizing.process_id() == packet.ProcessId) m_NeovideMinimizing = Window::NullWindow;
+		m_NeovideClients.erase(packet.ProcessId);
+	}
+	else
+	{
+		wil::unique_process_handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, false, packet.ProcessId));
+		if (!process) return FALSE;
+		std::array<wchar_t, 32768> path{};
+		DWORD size = static_cast<DWORD>(path.size());
+		if (!QueryFullProcessImageNameW(process.get(), 0, path.data(), &size)) return FALSE;
+		const auto filename = wcsrchr(path.data(), L'\\');
+		if (!filename || _wcsicmp(filename + 1, L"neovide.exe") != 0) return FALSE;
+		if (auto existing = m_NeovideClients.find(packet.ProcessId); existing != m_NeovideClients.end() && WaitForSingleObject(existing->second->Process.get(), 0) != WAIT_TIMEOUT)
+			m_NeovideClients.erase(existing);
+		auto existing = m_NeovideClients.find(packet.ProcessId);
+		if (existing == m_NeovideClients.end())
+		{
+			auto client = std::make_unique<NeovideClient>();
+			client->ProcessId = packet.ProcessId;
+			client->Token = ++m_NeovideToken;
+			client->Rgb = packet.Rgb;
+			client->Receiver = handle();
+			client->Process = std::move(process);
+			if (!RegisterWaitForSingleObject(&client->Wait, client->Process.get(), NeovideProcessExited, client.get(), INFINITE, WT_EXECUTEONLYONCE)) return FALSE;
+			m_NeovideClients.emplace(packet.ProcessId, std::move(client));
+		}
+		else existing->second->Rgb = packet.Rgb;
+	}
+	if (const HWND foreground = GetForegroundWindow())
+	{
+		const HWND root = ApplicationRoot(foreground);
+		m_NeovideFocus.Observe(reinterpret_cast<std::uintptr_t>(root), IsTaskbarWindow(root));
+	}
+	// Acknowledge IPC before making synchronous calls into Explorer's XAML thread.
+	post_message(NeovideTheme::RefreshMessage);
+	return TRUE;
+}
+
 LRESULT TaskbarAttributeWorker::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+	if (uMsg == WM_COPYDATA)
+	{
+		return OnNeovideTheme(reinterpret_cast<const COPYDATASTRUCT *>(lParam));
+	}
+	if (uMsg == NeovideTheme::ProcessExitedMessage)
+	{
+		const auto client = m_NeovideClients.find(static_cast<DWORD>(wParam));
+		if (client != m_NeovideClients.end() && client->second->Token == static_cast<DWORD>(lParam)) m_NeovideClients.erase(client);
+		if (!m_NeovideMinimizing.valid()) m_NeovideMinimizing = Window::NullWindow;
+		RefreshAllAttributes();
+		return 0;
+	}
+	if (uMsg == NeovideTheme::RefreshMessage)
+	{
+		RefreshAllAttributes();
+		return 0;
+	}
 	if (uMsg == WM_SETTINGCHANGE)
 	{
 		if (InSendMessage())
@@ -397,6 +506,23 @@ LRESULT TaskbarAttributeWorker::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM 
 TaskbarAppearance TaskbarAttributeWorker::GetConfig(taskbar_iterator taskbar) const
 {
 	const auto& config = m_ConfigManager.GetConfig();
+
+	if (!m_NeovideClients.empty())
+	{
+		TaskbarAppearance appearance;
+		const Window active(reinterpret_cast<HWND>(m_NeovideFocus.LastApplication));
+		const auto client = m_NeovideClients.find(active.process_id());
+		const bool registered = client != m_NeovideClients.end() && WaitForSingleObject(client->second->Process.get(), 0) == WAIT_TIMEOUT;
+		const auto selected = NeovideTheme::Select(registered, active.visible(), active.minimised() || active == m_NeovideMinimizing, IsFullscreen(active));
+		if (selected.Tint && active.monitor() == taskbar->first)
+		{
+			const auto rgb = client->second->Rgb;
+			appearance.Accent = ACCENT_ENABLE_GRADIENT;
+			appearance.Color = Util::Color(static_cast<uint8_t>(rgb >> 16), static_cast<uint8_t>(rgb >> 8), static_cast<uint8_t>(rgb));
+			appearance.ShowLine = !selected.HideBorder;
+		}
+		return appearance;
+	}
 
 	if (config.BatterySaverAppearance.Enabled && m_PowerSaver)
 	{
@@ -1534,6 +1660,9 @@ void TaskbarAttributeWorker::ResetState(bool manual)
 		}
 
 		m_ForegroundWindow = Window::ForegroundWindow();
+		const HWND application = ApplicationRoot(m_ForegroundWindow);
+		m_NeovideFocus.Observe(reinterpret_cast<std::uintptr_t>(application), IsTaskbarWindow(application));
+		m_NeovideMinimizing = Window::NullWindow;
 		if (IsStartMenuOpened())
 		{
 			m_CurrentStartMonitor = GetStartMenuMonitor();
@@ -1576,6 +1705,7 @@ void TaskbarAttributeWorker::ResetState(bool manual)
 
 TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
 {
+	m_NeovideClients.clear(); // join process-wait callbacks before destroying the message window
 	m_disableAttributeRefreshReply = true;
 	UnregisterTaskViewCallbacks();
 	UnregisterSearchCallbacks();
