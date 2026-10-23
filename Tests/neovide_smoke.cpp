@@ -35,6 +35,12 @@ appearanceDarkChromeTheme.surface = "#102030"
 )");
 	assert(system && system->Resolve(false) == 0xf0e0d0 && system->Resolve(true) == 0x102030);
 	using namespace NeovideTheme;
+	assert(IsExecutable(L"neovide.exe"));
+	assert(IsExecutable(L"NEOVIDE.EXE"));
+	assert(IsExecutable(L"neovide.previous-20261023.exe"));
+	assert(!IsExecutable(L"neovide.previous-unrelated.exe"));
+	assert(!IsExecutable(L"neovide.previous-20261023.exe.bad"));
+	assert(!IsExecutable(L"ChatGPT.exe"));
 	static_assert(sizeof(Packet) == 16);
 	assert(Valid({ 1, 123, 0, 1 })); // black is a valid theme
 	assert(!Valid({ 2, 123, 0, 1 }));

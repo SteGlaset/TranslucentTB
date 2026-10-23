@@ -460,7 +460,7 @@ LRESULT TaskbarAttributeWorker::OnNeovideTheme(const COPYDATASTRUCT *copy)
 		DWORD size = static_cast<DWORD>(path.size());
 		if (!QueryFullProcessImageNameW(process.get(), 0, path.data(), &size)) return FALSE;
 		const auto filename = wcsrchr(path.data(), L'\\');
-		if (!filename || _wcsicmp(filename + 1, L"neovide.exe") != 0) return FALSE;
+		if (!filename || !NeovideTheme::IsExecutable(filename + 1)) return FALSE;
 		if (auto existing = m_NeovideClients.find(packet.ProcessId); existing != m_NeovideClients.end() && WaitForSingleObject(existing->second->Process.get(), 0) != WAIT_TIMEOUT)
 			m_NeovideClients.erase(existing);
 		auto existing = m_NeovideClients.find(packet.ProcessId);

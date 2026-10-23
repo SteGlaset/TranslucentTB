@@ -35,7 +35,7 @@ Theme updates use `ColorScheme`, NvChad's `NvThemeReload`, startup and regained 
 
 ## IPC
 
-The existing hidden top-level `TTB_WorkerWindow` accepts `WM_COPYDATA` with `dwData = 0x4e544241` and exactly four 32-bit unsigned fields: version (1), Neovide parent PID, RGB (`0xRRGGBB`) and enabled (0/1). The process path must end in `neovide.exe` before registration is accepted. Unregistration removes only that PID. Process-wait notifications carry a generation token to reject stale exit messages. The IPC is acknowledged before the renderer is called.
+The existing hidden top-level `TTB_WorkerWindow` accepts `WM_COPYDATA` with `dwData = 0x4e544241` and exactly four 32-bit unsigned fields: version (1), Neovide parent PID, RGB (`0xRRGGBB`) and enabled (0/1). The process path must end in `neovide.exe` or a dated update backup `neovide.previous-YYYYMMDD.exe` before registration is accepted. This keeps already-open Neovide windows working when an executable is renamed during an update. Unregistration removes only that PID. Process-wait notifications carry a generation token to reject stale exit messages. The IPC is acknowledged before the renderer is called.
 
 ## Verification
 
