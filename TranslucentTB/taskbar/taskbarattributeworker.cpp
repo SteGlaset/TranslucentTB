@@ -1,6 +1,7 @@
 #include "taskbarattributeworker.hpp"
 #include <functional>
 #include <cstring>
+#include <fstream>
 #include <member_thunk/member_thunk.hpp>
 #include <set>
 #include <tlhelp32.h>
@@ -88,8 +89,8 @@ void TaskbarAttributeWorker::WindowInsertRemove(DWORD event, HWND hwnd, LONG idO
 	{
 		if constexpr (remove == EVENT_SYSTEM_MINIMIZESTART)
 		{
-			if (event == remove) m_NeovideMinimizing = window;
-			else if (m_NeovideMinimizing == window) m_NeovideMinimizing = Window::NullWindow;
+			if (event == remove) m_ThemeMinimizing = window;
+			else if (m_ThemeMinimizing == window) m_ThemeMinimizing = Window::NullWindow;
 		}
 		if (event == insert && window.valid())
 		{
@@ -104,7 +105,7 @@ void TaskbarAttributeWorker::WindowInsertRemove(DWORD event, HWND hwnd, LONG idO
 			}
 		}
 		if constexpr (remove == EVENT_SYSTEM_MINIMIZESTART)
-			if (!m_NeovideClients.empty()) RefreshAllAttributes();
+			if (!m_NeovideClients.empty() || m_CodexWindow.valid()) RefreshAllAttributes();
 	}
 }
 
@@ -121,7 +122,7 @@ void TaskbarAttributeWorker::OnWindowStateChange(DWORD, HWND hwnd, LONG idObject
 	if (const Window window(hwnd); idObject == OBJID_WINDOW && idChild == CHILDID_SELF && window.valid())
 	{
 		InsertWindow(window, true);
-		if (!m_NeovideClients.empty() && (m_NeovideClients.contains(window.process_id()) || m_NeovideFocus.LastApplication == reinterpret_cast<std::uintptr_t>(hwnd)))
+		if ((!m_NeovideClients.empty() || m_CodexWindow.valid()) && (m_NeovideClients.contains(window.process_id()) || m_ThemeFocus.LastApplication == reinterpret_cast<std::uintptr_t>(hwnd)))
 			RefreshAllAttributes();
 	}
 }
@@ -130,7 +131,12 @@ void TaskbarAttributeWorker::OnWindowCreateDestroy(DWORD event, HWND hwnd, LONG 
 {
 	if (const Window window(hwnd); idObject == OBJID_WINDOW && idChild == CHILDID_SELF)
 	{
-		if (event == EVENT_OBJECT_DESTROY && m_NeovideMinimizing == window) m_NeovideMinimizing = Window::NullWindow;
+		if (event == EVENT_OBJECT_DESTROY && m_ThemeMinimizing == window) m_ThemeMinimizing = Window::NullWindow;
+		if (event == EVENT_OBJECT_DESTROY && m_CodexWindow == window)
+		{
+			m_CodexWindow = Window::NullWindow;
+			RefreshAllAttributes();
+		}
 		if (event == EVENT_OBJECT_CREATE && window.valid())
 		{
 			if (const auto className = window.classname(); className && (*className == TASKBAR || *className == SECONDARY_TASKBAR))
@@ -172,14 +178,15 @@ void TaskbarAttributeWorker::OnForegroundWindowChange(DWORD, HWND hwnd, LONG idO
 	{
 		const Window oldForegroundWindow = std::exchange(m_ForegroundWindow, Window(hwnd).valid() ? hwnd : Window::NullWindow);
 		const HWND root = ApplicationRoot(hwnd);
-		m_NeovideFocus.Observe(reinterpret_cast<std::uintptr_t>(root), IsTaskbarWindow(root));
+		m_ThemeFocus.Observe(reinterpret_cast<std::uintptr_t>(root), IsTaskbarWindow(root));
+		if (!IsTaskbarWindow(root)) ObserveCodexWindow(root);
 
 		if (Error::ShouldLog<spdlog::level::debug>())
 		{
 			MessagePrint(spdlog::level::debug, std::format(L"Changed foreground window to {}", DumpWindow(m_ForegroundWindow)));
 		}
 
-		if (!m_NeovideClients.empty())
+		if (!m_NeovideClients.empty() || m_CodexWindow.valid())
 		{
 			RefreshAllAttributes();
 			return;
@@ -320,6 +327,11 @@ void TaskbarAttributeWorker::OnForceRefreshTaskbar(Window taskbar)
 
 LRESULT TaskbarAttributeWorker::OnSystemSettingsChange(UINT uiAction)
 {
+	if (!m_CodexConfigPath.empty())
+	{
+		ReloadCodexTheme();
+		RefreshAllAttributes();
+	}
 	if (uiAction == SPI_SETWORKAREA)
 	{
 		MessagePrint(spdlog::level::debug, L"Work area change detected, refreshing...");
@@ -364,6 +376,71 @@ void CALLBACK TaskbarAttributeWorker::NeovideProcessExited(void *context, BOOLEA
 	PostMessageW(client->Receiver, NeovideTheme::ProcessExitedMessage, client->ProcessId, client->Token);
 }
 
+void TaskbarAttributeWorker::OnCodexConfigChanged(void *context, DWORD, std::wstring_view filename)
+{
+	const auto that = static_cast<TaskbarAttributeWorker *>(context);
+	if ((filename.empty() || filename == L"config.toml") && !that->m_CodexReloadPending)
+	{
+		that->m_CodexReloadPending = true;
+		that->post_message(CodexTheme::RefreshMessage);
+	}
+}
+
+void TaskbarAttributeWorker::ObserveCodexWindow(HWND window)
+{
+	if (!CodexTheme::IsWindow(window))
+	{
+		if (m_CodexWindow == window) m_CodexWindow = Window::NullWindow;
+		return;
+	}
+	m_CodexWindow = window;
+	if (m_CodexConfigPath.empty())
+	{
+		std::wstring home(32768, L'\0');
+		const DWORD length = GetEnvironmentVariableW(L"CODEX_HOME", home.data(), static_cast<DWORD>(home.size()));
+		if (length && length < home.size())
+		{
+			home.resize(length);
+			m_CodexConfigPath = std::filesystem::path(home) / L"config.toml";
+		}
+		else
+		{
+			wil::unique_cotaskmem_string profile;
+			if (FAILED(SHGetKnownFolderPath(FOLDERID_Profile, KF_FLAG_DEFAULT, nullptr, profile.put()))) return;
+			m_CodexConfigPath = std::filesystem::path(profile.get()) / L".codex" / L"config.toml";
+		}
+	}
+	if (!m_CodexWatcher)
+	{
+		std::error_code error;
+		if (std::filesystem::is_directory(m_CodexConfigPath.parent_path(), error))
+			m_CodexWatcher = std::make_unique<FolderWatcher>(m_CodexConfigPath.parent_path(), false,
+				FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE, OnCodexConfigChanged, this);
+	}
+	ReloadCodexTheme();
+}
+
+void TaskbarAttributeWorker::ReloadCodexTheme()
+{
+	DWORD light = 1, size = sizeof(light);
+	if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+		L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size) == ERROR_SUCCESS)
+		m_CodexSystemDark = light == 0;
+	if (m_CodexConfigPath.empty()) return;
+	std::error_code error;
+	if (!std::filesystem::exists(m_CodexConfigPath, error))
+	{
+		if (!error) m_CodexTheme = {};
+		return;
+	}
+	const auto sizeBytes = std::filesystem::file_size(m_CodexConfigPath, error);
+	if (error || sizeBytes > 4 * 1024 * 1024) return;
+	std::ifstream file(m_CodexConfigPath, std::ios::binary);
+	std::string text(static_cast<std::size_t>(sizeBytes), '\0');
+	if (!file.read(text.data(), static_cast<std::streamsize>(text.size()))) return;
+	if (auto theme = CodexTheme::Parse(text)) m_CodexTheme = std::move(*theme);
+}
+
 LRESULT TaskbarAttributeWorker::OnNeovideTheme(const COPYDATASTRUCT *copy)
 {
 	if (!copy || copy->dwData != NeovideTheme::CopyDataId || copy->cbData != sizeof(NeovideTheme::Packet) || !copy->lpData) return FALSE;
@@ -372,7 +449,7 @@ LRESULT TaskbarAttributeWorker::OnNeovideTheme(const COPYDATASTRUCT *copy)
 	if (!NeovideTheme::Valid(packet)) return FALSE;
 	if (!packet.Enabled)
 	{
-		if (m_NeovideMinimizing.process_id() == packet.ProcessId) m_NeovideMinimizing = Window::NullWindow;
+		if (m_ThemeMinimizing.process_id() == packet.ProcessId) m_ThemeMinimizing = Window::NullWindow;
 		m_NeovideClients.erase(packet.ProcessId);
 	}
 	else
@@ -403,7 +480,7 @@ LRESULT TaskbarAttributeWorker::OnNeovideTheme(const COPYDATASTRUCT *copy)
 	if (const HWND foreground = GetForegroundWindow())
 	{
 		const HWND root = ApplicationRoot(foreground);
-		m_NeovideFocus.Observe(reinterpret_cast<std::uintptr_t>(root), IsTaskbarWindow(root));
+		m_ThemeFocus.Observe(reinterpret_cast<std::uintptr_t>(root), IsTaskbarWindow(root));
 	}
 	// Acknowledge IPC before making synchronous calls into Explorer's XAML thread.
 	post_message(NeovideTheme::RefreshMessage);
@@ -412,6 +489,13 @@ LRESULT TaskbarAttributeWorker::OnNeovideTheme(const COPYDATASTRUCT *copy)
 
 LRESULT TaskbarAttributeWorker::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+	if (uMsg == CodexTheme::RefreshMessage)
+	{
+		m_CodexReloadPending = false;
+		ReloadCodexTheme();
+		RefreshAllAttributes();
+		return 0;
+	}
 	if (uMsg == WM_COPYDATA)
 	{
 		return OnNeovideTheme(reinterpret_cast<const COPYDATASTRUCT *>(lParam));
@@ -420,7 +504,7 @@ LRESULT TaskbarAttributeWorker::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM 
 	{
 		const auto client = m_NeovideClients.find(static_cast<DWORD>(wParam));
 		if (client != m_NeovideClients.end() && client->second->Token == static_cast<DWORD>(lParam)) m_NeovideClients.erase(client);
-		if (!m_NeovideMinimizing.valid()) m_NeovideMinimizing = Window::NullWindow;
+		if (!m_ThemeMinimizing.valid()) m_ThemeMinimizing = Window::NullWindow;
 		RefreshAllAttributes();
 		return 0;
 	}
@@ -507,16 +591,17 @@ TaskbarAppearance TaskbarAttributeWorker::GetConfig(taskbar_iterator taskbar) co
 {
 	const auto& config = m_ConfigManager.GetConfig();
 
-	if (!m_NeovideClients.empty())
+	if (!m_NeovideClients.empty() || m_CodexWindow.valid())
 	{
 		TaskbarAppearance appearance;
-		const Window active(reinterpret_cast<HWND>(m_NeovideFocus.LastApplication));
+		const Window active(reinterpret_cast<HWND>(m_ThemeFocus.LastApplication));
 		const auto client = m_NeovideClients.find(active.process_id());
+		const bool codex = active == m_CodexWindow && active.valid();
 		const bool registered = client != m_NeovideClients.end() && WaitForSingleObject(client->second->Process.get(), 0) == WAIT_TIMEOUT;
-		const auto selected = NeovideTheme::Select(registered, active.visible(), active.minimised() || active == m_NeovideMinimizing, IsFullscreen(active));
+		const auto selected = NeovideTheme::Select(codex || registered, active.visible(), active.minimised() || active == m_ThemeMinimizing, IsFullscreen(active));
 		if (selected.Tint && active.monitor() == taskbar->first)
 		{
-			const auto rgb = client->second->Rgb;
+			const auto rgb = codex ? m_CodexTheme.Resolve(m_CodexSystemDark) : client->second->Rgb;
 			appearance.Accent = ACCENT_ENABLE_GRADIENT;
 			appearance.Color = Util::Color(static_cast<uint8_t>(rgb >> 16), static_cast<uint8_t>(rgb >> 8), static_cast<uint8_t>(rgb));
 			appearance.ShowLine = !selected.HideBorder;
@@ -1661,8 +1746,9 @@ void TaskbarAttributeWorker::ResetState(bool manual)
 
 		m_ForegroundWindow = Window::ForegroundWindow();
 		const HWND application = ApplicationRoot(m_ForegroundWindow);
-		m_NeovideFocus.Observe(reinterpret_cast<std::uintptr_t>(application), IsTaskbarWindow(application));
-		m_NeovideMinimizing = Window::NullWindow;
+		m_ThemeFocus.Observe(reinterpret_cast<std::uintptr_t>(application), IsTaskbarWindow(application));
+		if (!IsTaskbarWindow(application)) ObserveCodexWindow(application);
+		m_ThemeMinimizing = Window::NullWindow;
 		if (IsStartMenuOpened())
 		{
 			m_CurrentStartMonitor = GetStartMenuMonitor();
@@ -1705,6 +1791,7 @@ void TaskbarAttributeWorker::ResetState(bool manual)
 
 TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
 {
+	m_CodexWatcher.reset();
 	m_NeovideClients.clear(); // join process-wait callbacks before destroying the message window
 	m_disableAttributeRefreshReply = true;
 	UnregisterTaskViewCallbacks();

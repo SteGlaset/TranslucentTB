@@ -1,6 +1,16 @@
-# Neovide theme integration and lightweight transitions
+# Codex and Neovide themes with lightweight transitions
 
 This fork adds 180 ms Windows Composition transitions directly to ExplorerTAP. It requires no separate animator DLL, launcher or framework.
+
+## Codex Desktop
+
+Codex Desktop is detected automatically by its Windows package family, `OpenAI.Codex_2p2nqsd0c76g0`; its executable is currently named `ChatGPT.exe`. The separate ChatGPT application is not matched.
+
+When Codex is focused, its monitor's taskbar uses the theme's `surface` color. The border hides only while its window is maximized or fullscreen. Taskbar focus retains the preceding app; switching to another app or minimizing Codex restores the native appearance.
+
+The fork reads only the desktop appearance fields from `%USERPROFILE%/.codex/config.toml` (or `CODEX_HOME/config.toml`): `appearanceTheme`, `appearanceLightChromeTheme.surface` and `appearanceDarkChromeTheme.surface`. Light, dark and system modes are supported. Default surfaces are `#ffffff` and `#181818`, matching Codex 26.1016.8120.0. The resolved base theme color is used, not a screenshot of Mica/transparency. Codex may change this internal configuration format or its defaults in future versions.
+
+An existing native directory-change watcher reloads the settings after changes, and Windows setting notifications update system mode. Duplicate queued notifications are coalesced. No polling, screenshot capture, helper process or app modification is added. Invalid/incomplete TOML keeps the last valid theme. The TOML parser is the header-only [toml++ library](https://github.com/marzer/tomlplusplus), installed by vcpkg; the focused check downloads v3.4.0 and verifies its SHA-256.
 
 ## Behavior
 
@@ -29,7 +39,7 @@ The existing hidden top-level `TTB_WorkerWindow` accepts `WM_COPYDATA` with `dwD
 
 ## Verification
 
-Run `pwsh -NoProfile -File scripts/check-neovide.ps1`. This compiles the exact C++/WinRT transition implementation and checks packet validation, black backgrounds, taskbar focus context, minimize, maximize and visibility policies. It does not build the full application or prove visual rendering.
+Run `pwsh -NoProfile -File scripts/check-neovide.ps1`. This compiles the exact C++/WinRT transition implementation and Codex helper, and checks Codex package identity, TOML appearance fields, default/system/custom modes, malformed settings, packet validation, black backgrounds, taskbar focus context, minimize, maximize and visibility policies. It does not build the full application or prove visual rendering.
 
 With Neovim installed, run `nvim --headless -u NONE -l Tests/neovide_ipc.lua` for the example's IPC, theme events, disable/enable commands and absence of polling timers.
 

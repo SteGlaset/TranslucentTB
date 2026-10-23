@@ -9,7 +9,7 @@
 
 A lightweight (uses a few MB of RAM and almost no CPU) utility that makes the Windows taskbar translucent/transparent on Windows 10 and Windows 11.
 
-This fork adds lightweight native transitions and optional live Neovide theme integration. See [setup and verification](docs/neovide-transitions.md).
+This fork adds lightweight native transitions, automatic Codex Desktop themes and optional live Neovide theme integration. See [setup and verification](docs/neovide-transitions.md).
 
 ## Features
 

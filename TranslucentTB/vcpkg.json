@@ -4,6 +4,7 @@
     "member-thunk",
     "rapidjson",
     "spdlog",
+    "tomlplusplus",
     "wil"
   ]
 }

@@ -18,6 +18,7 @@
 
 #include "config/taskbarappearance.hpp"
 #include "neovidetheme.hpp"
+#include "codextheme.hpp"
 #include "../dynamicloader.hpp"
 #include "../ExplorerHooks/api.hpp"
 #include "../ExplorerTAP/api.hpp"
@@ -106,11 +107,20 @@ private:
 		~NeovideClient() { if (Wait) UnregisterWaitEx(Wait, INVALID_HANDLE_VALUE); }
 	};
 	std::unordered_map<DWORD, std::unique_ptr<NeovideClient>> m_NeovideClients;
-	NeovideTheme::FocusContext m_NeovideFocus;
-	Window m_NeovideMinimizing;
+	NeovideTheme::FocusContext m_ThemeFocus;
+	Window m_ThemeMinimizing;
 	DWORD m_NeovideToken = 0;
 	static void CALLBACK NeovideProcessExited(void *context, BOOLEAN);
 	LRESULT OnNeovideTheme(const COPYDATASTRUCT *copy);
+	Window m_CodexWindow;
+	CodexTheme::Settings m_CodexTheme;
+	bool m_CodexSystemDark = false;
+	bool m_CodexReloadPending = false;
+	std::filesystem::path m_CodexConfigPath;
+	std::unique_ptr<FolderWatcher> m_CodexWatcher;
+	static void OnCodexConfigChanged(void *context, DWORD action, std::wstring_view filename);
+	void ObserveCodexWindow(HWND window);
+	void ReloadCodexTheme();
 
 	// Hooks
 	member_thunk::page m_ThunkPage;

@@ -1,9 +1,39 @@
 #include <cassert>
+#include <cstdlib>
 #include "../Common/neovidetheme.hpp"
+#include "../Common/codextheme.hpp"
 #include "../ExplorerTAP/taskbartransition.hpp"
 
-int main()
+int main(int argc, char **argv)
 {
+	if (argc == 3 && std::string_view(argv[1]) == "--codex-window")
+		assert(CodexTheme::IsWindow(reinterpret_cast<HWND>(std::strtoull(argv[2], nullptr, 10))));
+	assert(CodexTheme::IsPackage(L"OpenAI.Codex_2p2nqsd0c76g0"));
+	assert(!CodexTheme::IsPackage(L"OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0"));
+	assert(!CodexTheme::IsWindow(nullptr));
+	const auto defaults = CodexTheme::Parse("");
+	assert(defaults && defaults->Resolve(true) == 0x181818 && defaults->Resolve(false) == 0xffffff);
+	const auto custom = CodexTheme::Parse(R"(
+[desktop]
+appearanceTheme = 'dark'
+appearanceLightChromeTheme = { surface = "#aBcD12" }
+[desktop.appearanceDarkChromeTheme]
+surface = "#000000" # black is valid
+)");
+	assert(custom && custom->Resolve(false) == 0);
+	assert(custom->Light == 0xabcd12);
+	assert(!CodexTheme::Parse("[desktop\nappearanceTheme="));
+	assert(!CodexTheme::Color("#12345678"));
+	assert(!CodexTheme::Color("#12gg34"));
+	const auto light = CodexTheme::Parse("[desktop]\nappearanceTheme = 'light'");
+	assert(light && light->Resolve(true) == 0xffffff);
+	const auto system = CodexTheme::Parse(R"(
+[desktop]
+appearanceTheme = "system"
+appearanceLightChromeTheme.surface = "#f0e0d0"
+appearanceDarkChromeTheme.surface = "#102030"
+)");
+	assert(system && system->Resolve(false) == 0xf0e0d0 && system->Resolve(true) == 0x102030);
 	using namespace NeovideTheme;
 	static_assert(sizeof(Packet) == 16);
 	assert(Valid({ 1, 123, 0, 1 })); // black is a valid theme

@@ -1,4 +1,4 @@
-name: Neovide integration checks
+name: Desktop theme integration checks
 on:
   push:
   pull_request:
@@ -9,7 +9,7 @@ jobs:
   policy-and-transition-header:
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Compile and run focused checks
         shell: cmd
         run: |
