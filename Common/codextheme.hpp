@@ -6,7 +6,15 @@
 #include <string>
 #include <string_view>
 #define TOML_ENABLE_FORMATTERS 0
+#ifdef _MSC_VER
+#pragma warning(push)
+// toml++ 3.4 uses whitespace in literal-operator declarations, deprecated by C++23.
+#pragma warning(disable: 5311)
+#endif
 #include <toml++/toml.hpp>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 #include <windows.h>
 #include <appmodel.h>
 

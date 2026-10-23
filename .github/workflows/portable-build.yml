@@ -11,7 +11,8 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.build-cache/vcpkg
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: dependencies
         with:
           path: |
             packages
@@ -47,3 +48,10 @@ jobs:
         with:
           name: portable-build-log
           path: portable-build.binlog
+      - uses: actions/cache/save@v4
+        if: always() && steps.dependencies.outputs.cache-hit != 'true'
+        with:
+          path: |
+            packages
+            .build-cache
+          key: windows-portable-v1-${{ hashFiles('**/packages.config', '**/vcpkg.json', 'Common/vcpkg-configuration.json') }}

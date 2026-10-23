@@ -19,7 +19,7 @@ $taskObject = Join-Path $taskOutput 'neovide-smoke.obj'
 $taskSource = Join-Path $taskRoot 'Tests/neovide_smoke.cpp'
 $taskLog = Join-Path $taskOutput 'compile.log'
 if (Get-Command cl -ErrorAction SilentlyContinue) {
-  & cl /nologo /std:c++latest /EHsc /DNOMINMAX /DWIN32_LEAN_AND_MEAN "/I$taskInclude/cppwinrt" "/I$taskDependencies" $taskSource "/Fe$taskExecutable" "/Fo$taskObject" /link WindowsApp.lib user32.lib 2>&1 | Set-Content -LiteralPath $taskLog
+  & cl /nologo /std:c++latest /WX /EHsc /DNOMINMAX /DWIN32_LEAN_AND_MEAN "/I$taskInclude/cppwinrt" "/I$taskDependencies" $taskSource "/Fe$taskExecutable" "/Fo$taskObject" /link WindowsApp.lib user32.lib 2>&1 | Set-Content -LiteralPath $taskLog
 } else {
   & clang++ -std=c++20 -O2 -fms-extensions -Wno-nonportable-include-path -static-libstdc++ -static-libgcc -DNOMINMAX -DWIN32_LEAN_AND_MEAN -I "$taskInclude/cppwinrt" -I $taskDependencies -idirafter "$taskInclude/um" -idirafter "$taskInclude/shared" -idirafter "$taskInclude/winrt" $taskSource -o $taskExecutable "$taskSdkRoot/Lib/$taskSdkVersion/um/x64/WindowsApp.lib" -lole32 -loleaut32 -luuid 2>&1 | Set-Content -LiteralPath $taskLog
 }
